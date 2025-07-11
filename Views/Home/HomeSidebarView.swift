@@ -98,9 +98,9 @@ struct HomeSidebarView: View {
         let albumCount = libraryManager.databaseManager.getAlbumCount()
         
         var items: [HomeSidebarItem] = [
+            HomeSidebarItem(type: .albums, albumCount: albumCount),
             HomeSidebarItem(type: .tracks, trackCount: libraryManager.tracks.count),
-            HomeSidebarItem(type: .artists, artistCount: artistCount),
-            HomeSidebarItem(type: .albums, albumCount: albumCount)
+            HomeSidebarItem(type: .artists, artistCount: artistCount)
         ]
 
         let pinnedSidebarItems = libraryManager.pinnedItems.map { pinnedItem in
