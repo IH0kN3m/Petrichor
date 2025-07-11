@@ -219,7 +219,7 @@ struct HomeView: View {
                     entitySortAscending.toggle()
                     sortEntities()
                 }) {
-                    Image(Icons.sortIcon(for: trackListSortAscending))
+                    Image(Icons.sortIcon(for: entitySortAscending))
                         .renderingMode(.template)
                         .scaleEffect(0.8)
                 }
