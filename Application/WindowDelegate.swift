@@ -1,7 +1,7 @@
 //
 // WindowDelegate class
 //
-// This class handles app window management around its default size and positioning on launch.
+// This class handles app window management based on user settings
 //
 
 import AppKit
@@ -30,39 +30,5 @@ class WindowDelegate: NSObject, NSWindowDelegate {
 
         // Normal close if menubar mode is disabled
         return true
-    }
-
-    // Add this new method to validate window frame
-    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
-        // If the window frame looks like a preview frame, return a proper default
-        if newFrame.width < 800 || newFrame.height < 600 {
-            let screenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect.zero
-            let width: CGFloat = 1200
-            let height: CGFloat = 800
-            let x = (screenFrame.width - width) / 2 + screenFrame.origin.x
-            let y = (screenFrame.height - height) / 2 + screenFrame.origin.y
-            return NSRect(x: x, y: y, width: width, height: height)
-        }
-        return newFrame
-    }
-
-    // Add this to prevent saving corrupted frames
-    func windowDidMove(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow else { return }
-
-        // Check if the window is in a suspicious position (like preview pane)
-        let frame = window.frame
-        guard let mainScreen = NSScreen.main else { return }
-        if frame.width < 800 || frame.height < 600 || frame.origin.x > mainScreen.frame.width - 700 {
-            // Don't save this frame
-            window.setFrameAutosaveName("")
-
-            // Re-enable autosave after centering
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                window.setFrame(NSRect(x: 0, y: 0, width: 1200, height: 800), display: true)
-                window.center()
-                window.setFrameAutosaveName("MainWindow")
-            }
-        }
     }
 }
