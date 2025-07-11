@@ -46,6 +46,11 @@ struct TrackGridView: View {
                         }
                     }
                     .padding()
+                    .onAppear {
+                        // Preheat grid thumbnails when the grid becomes visible. This mirrors TrackListView’s logic so
+                        // scrolling is already buttery-smooth when the cells appear.
+                        ThumbnailPreheater.shared.preheat(tracks: tracks)
+                    }
                 }
                 .background(Color.clear)
                 .onAppear {
@@ -224,31 +229,30 @@ private struct TrackGridItem: View {
     private func loadArtworkIfNeeded() {
         guard artworkImage == nil, artworkLoadTask == nil else { return }
 
-        artworkLoadTask = Task { @MainActor in
-            // Small delay to prevent loading during fast scrolling
-            try? await Task.sleep(nanoseconds: TimeConstants.oneFiftyMilliseconds) // 150ms
+        // Attempt cache first – extremely fast on the main thread.
+        let cacheKey = "\(track.id.uuidString)-track-grid"
+        if let cached = ImageCache.shared.image(forKey: cacheKey) {
+            artworkImage = cached
+            return
+        }
+
+        artworkLoadTask = Task {
+            // Yield once so layout finishes before we tackle decoding.
+            await Task.yield()
 
             guard !Task.isCancelled else { return }
 
-            if let artworkData = track.artworkData {
-                // Load image in background
-                let image = await loadImage(from: artworkData)
+            if let data = track.artworkData,
+               let thumbnail = ThumbnailGenerator.makeThumbnailLimited(from: data, maxPixelSize: 320) { // 160pt * 2
+                ImageCache.shared.insertImage(thumbnail, forKey: cacheKey)
 
-                guard !Task.isCancelled else { return }
-
-                artworkImage = image
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    self.artworkImage = thumbnail
+                }
             }
 
-            artworkLoadTask = nil
-        }
-    }
-
-    private func loadImage(from data: Data) async -> NSImage? {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let image = NSImage(data: data)
-                continuation.resume(returning: image)
-            }
+            await MainActor.run { self.artworkLoadTask = nil }
         }
     }
 }

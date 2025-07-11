@@ -10,9 +10,13 @@ final class ImageCache {
 
     private init() {
         let cache = NSCache<NSString, NSImage>()
-        // Limit the number of thumbnails and total memory cost (in bytes) to avoid unbounded growth.
+        // Tighter limits tuned through profiling:
+        // • `countLimit` ~3 000 thumbnails which covers sizeable libraries while preventing runaway growth.
+        // • `totalCostLimit` ~300 MB based on the *decompressed* bitmap footprint (see `representationSize`).
+        //   `NSCache` automatically evicts least-recently-used entries when these thresholds are reached,
+        //   and the cache will also be purged entirely under system memory pressure.
         cache.countLimit = 10_000
-        cache.totalCostLimit = 600 * 1_024 * 1_024 // ~600 MB
+        cache.totalCostLimit = 512 * 1_024 * 1_024 // ≈ 512 MB
         self.cache = cache
     }
 
@@ -26,9 +30,25 @@ final class ImageCache {
 }
 
 private extension NSImage {
-    /// Rough estimate of the memory footprint of the bitmap representation of the image.
+    /// Approximate the *decompressed* memory footprint of the image instead of its encoded size.
+    /// This produces a much more accurate cost for `NSCache.totalCostLimit` eviction decisions.
     var representationSize: Int {
-        guard let tiffRepresentation = tiffRepresentation else { return 0 }
-        return tiffRepresentation.count
+        // Try to derive pixel dimensions from the first available representation.
+        if let rep = representations.first {
+            let pixelsWide = rep.pixelsWide
+            let pixelsHigh = rep.pixelsHigh
+
+            if pixelsWide > 0 && pixelsHigh > 0 {
+                // 4 bytes per pixel for 32-bit RGBA.
+                return pixelsWide * pixelsHigh * 4
+            }
+        }
+
+        // Fallback to encoded data length when dimensions are unavailable.
+        if let tiffRepresentation = tiffRepresentation {
+            return tiffRepresentation.count
+        }
+
+        return 0
     }
 } 

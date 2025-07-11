@@ -12,7 +12,9 @@ final class ThumbnailPreheater {
     private let gridItemWidth: CGFloat = 180 // Matches `itemWidth` in EntityGridView
 
     // Track list thumbnail properties
-    private let trackThumbnailSize = 40 * 4 // 40pt thumbnail rendered at 2× (plus wiggle room for higher density)
+    private let trackListThumbnailSize = 40 * 4 // 40pt thumbnail rendered at 2× (plus wiggle room for higher density)
+    // Track grid (160pt) thumbnail size
+    private let trackGridThumbnailSize = 160 * 2 // 160pt * 2 = 320px
 
     // Separate task for track thumbnail preheating so album/artist and track preheats don't cancel each other out
     private var trackPreheatTask: Task<Void, Never>?
@@ -64,7 +66,7 @@ final class ThumbnailPreheater {
         // Cancel any in-flight track work so we don’t waste resources if the list changes.
         trackPreheatTask?.cancel()
 
-        trackPreheatTask = Task.detached(priority: .utility) { [trackThumbnailSize] in
+        trackPreheatTask = Task.detached(priority: .utility) { [trackListThumbnailSize, trackGridThumbnailSize] in
             for track in tracks {
                 // Respect cancellation
                 guard !Task.isCancelled else { return }
@@ -77,8 +79,17 @@ final class ThumbnailPreheater {
                 let listKey = "\(track.id.uuidString)-track-list"
                 if ImageCache.shared.image(forKey: listKey) == nil {
                     if let image = ThumbnailGenerator.makeThumbnailLimited(from: artworkData,
-                                                                          maxPixelSize: trackThumbnailSize) {
+                                                                          maxPixelSize: trackListThumbnailSize) {
                         ImageCache.shared.insertImage(image, forKey: listKey)
+                    }
+                }
+
+                // Track grid thumbnail (160×160 points, rendered at 2× scale)
+                let gridKey = "\(track.id.uuidString)-track-grid"
+                if ImageCache.shared.image(forKey: gridKey) == nil {
+                    if let image = ThumbnailGenerator.makeThumbnailLimited(from: artworkData,
+                                                                          maxPixelSize: trackGridThumbnailSize) {
+                        ImageCache.shared.insertImage(image, forKey: gridKey)
                     }
                 }
             }

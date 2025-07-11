@@ -633,9 +633,8 @@ private struct AlbumArtworkContent: View {
     let trackInfo: TrackArtworkInfo?
 
     var body: some View {
-        if let artworkData = trackInfo?.artworkData,
-           let nsImage = NSImage(data: artworkData) {
-            Image(nsImage: nsImage)
+        if let image = cachedArtworkImage {
+            Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 56, height: 56)
@@ -649,6 +648,26 @@ private struct AlbumArtworkContent: View {
                         .foregroundColor(.secondary)
                 )
         }
+    }
+
+    // MARK: - Thumbnail helper
+
+    private var cachedArtworkImage: NSImage? {
+        guard let data = trackInfo?.artworkData else { return nil }
+
+        // Track id is unique, player thumbnail is always 56pt
+        let cacheKey = "\(trackInfo!.id.uuidString)-player-56"
+
+        if let cached = ImageCache.shared.image(forKey: cacheKey) {
+            return cached
+        }
+
+        if let thumb = ThumbnailGenerator.makeThumbnailLimited(from: data, maxPixelSize: 112) { // 56pt × 2
+            ImageCache.shared.insertImage(thumb, forKey: cacheKey)
+            return thumb
+        }
+
+        return NSImage(data: data)
     }
 }
 

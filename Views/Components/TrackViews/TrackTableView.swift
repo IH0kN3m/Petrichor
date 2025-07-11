@@ -1072,9 +1072,23 @@ struct TrackTableTitleCell: View {
     let track: Track
     @ObservedObject var playbackManager: PlaybackManager
 
-    // Use the track's existing artwork data directly
+    // Use a cached, downsampled thumbnail (≈30pt × 2) instead of decoding full artwork each call
     private var artworkImage: NSImage? {
+        let cacheKey = "\(track.id.uuidString)-track-table"
+
+        // Fast path – already cached
+        if let cached = ImageCache.shared.image(forKey: cacheKey) {
+            return cached
+        }
+
+        // Decode and cache a very small thumbnail; fall back to full decode if generator fails.
         if let data = track.artworkData {
+            if let thumb = ThumbnailGenerator.makeThumbnailLimited(from: data, maxPixelSize: 60) {
+                ImageCache.shared.insertImage(thumb, forKey: cacheKey)
+                return thumb
+            }
+
+            // Fallback (rare): full decode
             return NSImage(data: data)
         }
         return nil
