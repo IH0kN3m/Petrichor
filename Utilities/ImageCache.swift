@@ -10,13 +10,12 @@ final class ImageCache {
 
     private init() {
         let cache = NSCache<NSString, NSImage>()
-        // Tighter limits tuned through profiling:
-        // • `countLimit` ~3 000 thumbnails which covers sizeable libraries while preventing runaway growth.
-        // • `totalCostLimit` ~300 MB based on the *decompressed* bitmap footprint (see `representationSize`).
-        //   `NSCache` automatically evicts least-recently-used entries when these thresholds are reached,
-        //   and the cache will also be purged entirely under system memory pressure.
-        cache.countLimit = 100_000
-        cache.totalCostLimit = 1024 * 1_024 * 1_024 // ≈ 512 MB
+        // We err on the side of *more* caching – decoding is usually more expensive than keeping
+        // a couple hundred MB in RAM on modern Macs.  The system will still purge under pressure.
+        // • Allow up to 150k thumbnails (≈ large 100 k-track libraries with artwork).
+        // • Up to 1.5 GB decompressed bitmap footprint – plentiful on 16-32 GB machines.
+        cache.countLimit = 150_000
+        cache.totalCostLimit = 1_536 * 1_024 * 1_024 // ≈ 1.5 GB
         self.cache = cache
     }
 

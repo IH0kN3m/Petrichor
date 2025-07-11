@@ -5,6 +5,14 @@ struct EntityGridView<T: Entity>: View {
     let onSelectEntity: (T) -> Void
     let contextMenuItems: (T) -> [ContextMenuItem]
 
+    /// Key used to trigger a thumbnail preheat only when the dataset actually changes.
+    private var preheatKey: Int {
+        var hasher = Hasher()
+        hasher.combine(entities.count)
+        for id in entities.map(\.id) { hasher.combine(id) }
+        return hasher.finalize()
+    }
+
     @State private var gridWidth: CGFloat = 0
 
     private let itemWidth: CGFloat = 180
@@ -23,7 +31,7 @@ struct EntityGridView<T: Entity>: View {
         GeometryReader { geometry in
             ScrollView {
                 LazyVGrid(columns: gridColumns, spacing: spacing) {
-                    ForEach(Array(entities.enumerated()), id: \.element.id) { _, entity in
+                    ForEach(entities) { entity in
                         EntityGridItem(
                             entity: entity,
                             itemWidth: itemWidth
@@ -37,7 +45,6 @@ struct EntityGridView<T: Entity>: View {
                                 contextMenuItem(item)
                             }
                         }
-                        .id(entity.id)
                     }
                 }
                 .padding(.horizontal)
@@ -50,6 +57,10 @@ struct EntityGridView<T: Entity>: View {
             .onChange(of: geometry.size.width) { _, newWidth in
                 gridWidth = newWidth - 32  // 16 padding on each side
             }
+        }
+        // Run preheating asynchronously when data actually changes, not just onAppear.
+        .task(id: preheatKey) {
+            ThumbnailPreheater.shared.preheat(entities: entities)
         }
     }
 

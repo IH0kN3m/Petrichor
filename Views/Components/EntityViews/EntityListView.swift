@@ -5,7 +5,19 @@ struct EntityListView<T: Entity>: View {
     let onSelectEntity: (T) -> Void
     let contextMenuItems: (T) -> [ContextMenuItem]
 
-    @State private var hoveredEntityID: UUID?
+    // Hover tracking is now handled inside each row to minimize parent view updates.
+
+    /// Changing this value forces SwiftUI to rerun the `task` below, allowing us to
+    /// kick-off a new thumbnail pre-heat only when the underlying data actually changes
+    /// (e.g. library refresh) rather than every `onAppear`.
+    private var preheatKey: Int {
+        // Hash the IDs so that re-ordering doesn’t trigger a new pre-heat, only actual
+        // additions/removals.
+        var hasher = Hasher()
+        hasher.combine(entities.count)
+        for id in entities.map(\.id) { hasher.combine(id) }
+        return hasher.finalize()
+    }
 
     var body: some View {
         ScrollView {
@@ -13,13 +25,10 @@ struct EntityListView<T: Entity>: View {
                 ForEach(entities) { entity in
                     EntityListRow(
                         entity: entity,
-                        isHovered: hoveredEntityID == entity.id,
                         onSelect: {
                             onSelectEntity(entity)
                         },
-                        onHover: { isHovered in
-                            hoveredEntityID = isHovered ? entity.id : nil
-                        }
+                        // Hover handled internally
                     )
                     .equatable()
                     .contextMenu {
@@ -27,10 +36,13 @@ struct EntityListView<T: Entity>: View {
                             contextMenuItem(item)
                         }
                     }
-                    .id(entity.id)
                 }
             }
             .padding(5)
+        }
+        // Pre-heat thumbnails only when the underlying entity collection changes.
+        .task(id: preheatKey) {
+            ThumbnailPreheater.shared.preheat(entities: entities)
         }
     }
 
@@ -56,9 +68,10 @@ struct EntityListView<T: Entity>: View {
 // MARK: - Entity List Row
 private struct EntityListRow<T: Entity>: View, Equatable {
     let entity: T
-    let isHovered: Bool
     let onSelect: () -> Void
-    let onHover: (Bool) -> Void
+
+    // Local hover state - this prevents changes from propagating up the entire list hierarchy.
+    @State private var isHovered = false
 
     // Store a SwiftUI `Image` to avoid re-creating it on every view update
     @State private var artworkImage: Image?
@@ -124,9 +137,14 @@ private struct EntityListRow<T: Entity>: View, Equatable {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(backgroundView)
+        .compositingGroup()
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
-        .onHover(perform: onHover)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovered = hovering
+            }
+        }
         .animation(.easeInOut(duration: 0.15), value: isHovered)
         .onAppear {
             loadArtworkAsync()
@@ -146,8 +164,8 @@ private struct EntityListRow<T: Entity>: View, Equatable {
     }
 
     private func loadArtworkAsync() {
-        // Try cache first
-        let cacheKey = "\(entity.id.uuidString)-list"
+        // Reuse larger grid thumbnails if available so we never decode twice.
+        let cacheKey = "\(entity.id.uuidString)-grid-180"
         if let cachedNSImage = ImageCache.shared.image(forKey: cacheKey) {
             self.artworkImage = Image(nsImage: cachedNSImage)
             return
@@ -162,7 +180,7 @@ private struct EntityListRow<T: Entity>: View, Equatable {
             guard !Task.isCancelled else { return }
 
             if let data = entity.artworkData {
-                if let thumbnailImage = ThumbnailGenerator.makeThumbnailLimited(from: data, maxPixelSize: 96 * 2) {
+                if let thumbnailImage = ThumbnailGenerator.makeThumbnailLimited(from: data, maxPixelSize: Int(180 * 2)) {
                     ImageCache.shared.insertImage(thumbnailImage, forKey: cacheKey)
 
                     await MainActor.run {

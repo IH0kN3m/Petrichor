@@ -16,11 +16,16 @@ struct ThumbnailGenerator {
             return nil
         }
 
+        // We explicitly turn off colour-profile conversions & immediate caching so the
+        // decoding happens once and only once (when the thumbnail is actually drawn),
+        // which avoids double‒work during scrolling.  We still have a transform so the
+        // orientation tags are respected.
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true
+            kCGImageSourceShouldCacheImmediately: false, // defer caching until first use
+            kCGImageSourceShouldAllowFloat: false        // skip colour-profile conversions
         ]
 
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {

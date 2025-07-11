@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 struct TrackListView: View {
     let tracks: [Track]
@@ -7,62 +8,41 @@ struct TrackListView: View {
     let sortByDiscAndTrackNumber: Bool
 
     @EnvironmentObject var playbackManager: PlaybackManager
-    @State private var hoveredTrackID: UUID?
+    // Hover tracking is now handled within each row itself to avoid triggering full list re-renders.
+
+    // MARK: - Pre-computed section model
+
+    // An album section contains all discs → tracks that belong to the same album.
+    private struct DiscGroup: Identifiable {
+        let id = UUID()
+        let discNumber: Int
+        let tracks: [Track]
+    }
+
+    private struct AlbumSection: Identifiable {
+        let id = UUID()
+        let albumName: String
+        let discGroups: [DiscGroup]
+    }
+
+    @State private var sections: [AlbumSection] = []
+    @State private var hasMultipleAlbums = false
+
+    // Triggers async recomputation whenever the track list or sort flag changes.
+    private var recomputeKey: String {
+        "\(tracks.count)-\(sortByDiscAndTrackNumber)"
+    }
 
     var body: some View {
-        // Sort tracks as requested when the flag is enabled
-        let sortedTracks: [Track]
-
-        if sortByDiscAndTrackNumber {
-            // Determine if multiple albums are present
-            let hasMultipleAlbums = Set(tracks.map { $0.album }).count > 1
-
-            sortedTracks = tracks.sorted { lhs, rhs in
-                // 1. Album (only when multiple albums are present)
-                if hasMultipleAlbums {
-                    let albumComparison = lhs.album.localizedCaseInsensitiveCompare(rhs.album)
-                    if albumComparison != .orderedSame {
-                        return albumComparison == .orderedAscending
-                    }
-                }
-
-                // 2. Disc number (nil -> 1)
-                let disc1 = lhs.discNumber ?? 1
-                let disc2 = rhs.discNumber ?? 1
-                if disc1 != disc2 {
-                    return disc1 < disc2
-                }
-
-                // 3. Track number (nil -> Int.max so unknown tracks go last)
-                let num1 = lhs.trackNumber ?? Int.max
-                let num2 = rhs.trackNumber ?? Int.max
-                return num1 < num2
-            }
-        } else {
-            sortedTracks = tracks
-        }
-
-        // Group by album -> disc for header display
-        let hasMultipleAlbums = Set(sortedTracks.map { $0.album }).count > 1
-
-        // Helper to keep album order consistent with sorted list
-        let albumOrder: [String] = sortedTracks.reduce(into: []) { result, track in
-            if result.last != track.album {
-                result.append(track.album)
-            }
-        }
-
-        let albumGrouped = Dictionary(grouping: sortedTracks) { $0.album }
-
-        return ScrollView {
+        ScrollView {
             LazyVStack(spacing: 0, pinnedViews: []) {
-                ForEach(albumOrder, id: \.self) { album in
-                    let albumTracks = albumGrouped[album] ?? []
+                ForEach(sections) { section in
+                    // albumTracks flattened if needed in the future – not currently used
 
                     // Album header if multiple albums
                     if sortByDiscAndTrackNumber && hasMultipleAlbums {
                         HStack {
-                            Text(album)
+                            Text(section.albumName)
                                 .font(.subheadline)
                                 .fontWeight(.semibold)
                                 .padding(.vertical, 6)
@@ -72,15 +52,11 @@ struct TrackListView: View {
                         .background(Color(NSColor.textBackgroundColor))
                     }
 
-                    // Group tracks of this album by disc
-                    let discGrouped = Dictionary(grouping: albumTracks) { $0.discNumber ?? 1 }
-                    let discKeys = discGrouped.keys.sorted()
-
-                    ForEach(discKeys, id: \.self) { disc in
+                    ForEach(section.discGroups) { discGroup in
                         // Disc header when needed
-                        if sortByDiscAndTrackNumber && (discKeys.count > 1 || disc > 1) {
+                        if sortByDiscAndTrackNumber && (section.discGroups.count > 1 || discGroup.discNumber > 1) {
                             HStack {
-                                Text("Disc \(disc)")
+                                Text("Disc \(discGroup.discNumber)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                     .padding(.vertical, 4)
@@ -89,21 +65,17 @@ struct TrackListView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Color(NSColor.textBackgroundColor))
                         }
-
-                        ForEach(Array((discGrouped[disc] ?? []).enumerated()), id: \.element.id) { _, track in
+                        ForEach(discGroup.tracks, id: \.id) { track in
                             TrackListRow(
                                 track: track,
-                                isHovered: hoveredTrackID == track.id,
                                 onPlay: {
                                 let isCurrentTrack = playbackManager.currentTrack?.url.path == track.url.path
                                     if !isCurrentTrack {
                                         onPlayTrack(track)
                                     }
-                                },
-                                onHover: { isHovered in
-                                    hoveredTrackID = isHovered ? track.id : nil
                                 }
                             )
+                            .equatable()
                             .contextMenu {
                                 TrackContextMenuContent(items: contextMenuItems(track))
                             }
@@ -117,15 +89,128 @@ struct TrackListView: View {
                 ThumbnailPreheater.shared.preheat(tracks: tracks)
             }
         }
+        // Recompute grouping & sorting *off-thread* whenever the key changes.
+        .task(id: recomputeKey) {
+            await computeSections()
+        }
+    }
+
+    // MARK: - Async processing
+
+    @MainActor
+    private func apply(sections newSections: [AlbumSection], hasMultipleAlbums flag: Bool) {
+        self.sections = newSections
+        self.hasMultipleAlbums = flag
+    }
+
+    private func computeSections() async {
+        // Perform heavy work on a background thread.
+        let tracksCopy = tracks // Capture value outside MainActor
+        let sortFlag = sortByDiscAndTrackNumber
+
+        let result = await Task.detached(priority: .userInitiated) { () -> (Bool, [AlbumSection]) in
+            // 1. Sorting
+            let sortedTracks: [Track]
+
+            if sortFlag {
+                let multiAlbum = Set(tracksCopy.map { $0.album }).count > 1
+
+                sortedTracks = tracksCopy.sorted { lhs, rhs in
+                    if multiAlbum {
+                        let albumCmp = lhs.album.localizedCaseInsensitiveCompare(rhs.album)
+                        if albumCmp != .orderedSame { return albumCmp == .orderedAscending }
+                    }
+
+                    let disc1 = lhs.discNumber ?? 1
+                    let disc2 = rhs.discNumber ?? 1
+                    if disc1 != disc2 { return disc1 < disc2 }
+
+                    let num1 = lhs.trackNumber ?? Int.max
+                    let num2 = rhs.trackNumber ?? Int.max
+                    return num1 < num2
+                }
+            } else {
+                sortedTracks = tracksCopy
+            }
+
+            let hasMultiple = Set(sortedTracks.map { $0.album }).count > 1
+
+            // 2. Grouping by album / disc
+            var albumSections: [AlbumSection] = []
+            var currentAlbum = ""
+            var currentTracks: [Track] = []
+
+            func flushAlbum() {
+                guard !currentAlbum.isEmpty else { return }
+                let discGrouped = Dictionary(grouping: currentTracks) { $0.discNumber ?? 1 }
+                let discGroups = discGrouped.keys.sorted().map { DiscGroup(discNumber: $0, tracks: discGrouped[$0]!.sorted { ($0.trackNumber ?? 0) < ($1.trackNumber ?? 0) }) }
+                albumSections.append(AlbumSection(albumName: currentAlbum, discGroups: discGroups))
+                currentTracks.removeAll(keepingCapacity: true)
+            }
+
+            for track in sortedTracks {
+                if track.album != currentAlbum {
+                    flushAlbum()
+                    currentAlbum = track.album
+                }
+                currentTracks.append(track)
+            }
+            flushAlbum()
+
+            return (hasMultiple, albumSections)
+        }.value
+
+        await MainActor.run {
+            apply(sections: result.1, hasMultipleAlbums: result.0)
+        }
     }
 }
 
 // MARK: - Track List Row
-private struct TrackListRow: View {
-    @ObservedObject var track: Track
-    let isHovered: Bool
+private final class TrackRowViewModel: ObservableObject {
+    @Published var title: String
+    @Published var artist: String
+    @Published var album: String
+    @Published var year: String
+    @Published var duration: Double
+    @Published var isMetadataLoaded: Bool
+
+    private var cancellables = Set<AnyCancellable>()
+
+    init(track: Track) {
+        // Seed initial values
+        self.title = track.title
+        self.artist = track.artist
+        self.album = track.album
+        self.year = track.year
+        self.duration = track.duration
+        self.isMetadataLoaded = track.isMetadataLoaded
+
+        // Subscribe only to the properties we actually display
+        track.$title.receive(on: RunLoop.main).sink { [weak self] in self?.title = $0 }.store(in: &cancellables)
+        track.$artist.receive(on: RunLoop.main).sink { [weak self] in self?.artist = $0 }.store(in: &cancellables)
+        track.$album.receive(on: RunLoop.main).sink { [weak self] in self?.album = $0 }.store(in: &cancellables)
+        track.$year.receive(on: RunLoop.main).sink { [weak self] in self?.year = $0 }.store(in: &cancellables)
+        track.$duration.receive(on: RunLoop.main).sink { [weak self] in self?.duration = $0 }.store(in: &cancellables)
+        track.$isMetadataLoaded.receive(on: RunLoop.main).sink { [weak self] in self?.isMetadataLoaded = $0 }.store(in: &cancellables)
+    }
+}
+
+private struct TrackListRow: View, Equatable {
+    let track: Track
     let onPlay: () -> Void
-    let onHover: (Bool) -> Void
+
+    @StateObject private var vm: TrackRowViewModel
+
+    // Custom initialiser to seed the view model once.
+    init(track: Track, onPlay: @escaping () -> Void) {
+        self.track = track
+        self.onPlay = onPlay
+        _vm = StateObject(wrappedValue: TrackRowViewModel(track: track))
+    }
+
+    // Local hover state to avoid propagating changes to the parent list view.
+    @State private var isHovered = false
 
     @EnvironmentObject var playbackManager: PlaybackManager
     @State private var artworkImage: NSImage?
@@ -140,7 +225,14 @@ private struct TrackListRow: View {
         }
         .frame(height: 60)
         .background(backgroundView)
-        .onHover(perform: onHover)
+        // Creating a separate CoreAnimation layer for the row dramatically reduces
+        // the cost of blending text + thumbnail while scrolling.
+        .compositingGroup()
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovered = hovering
+            }
+        }
     }
 
     // MARK: - Computed Properties
@@ -202,7 +294,7 @@ private struct TrackListRow: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 40, height: 40)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
-            } else if track.isMetadataLoaded {
+            } else if vm.isMetadataLoaded {
                 placeholderArtwork
             } else {
                 loadingArtwork
@@ -247,31 +339,31 @@ private struct TrackListRow: View {
     }
 
     private var titleLabel: some View {
-        Text(track.title)
+        Text(vm.title)
             .font(.system(size: 14, weight: isCurrentTrack ? .medium : .regular))
             .foregroundColor(isCurrentTrack ? .accentColor : .primary)
             .lineLimit(1)
-            .redacted(reason: track.isMetadataLoaded ? [] : .placeholder)
+            .redacted(reason: vm.isMetadataLoaded ? [] : .placeholder)
     }
 
     private var detailsLabel: some View {
         HStack(spacing: 4) {
-            Text(track.artist)
+            Text(vm.artist)
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
                 .lineLimit(1)
-                .redacted(reason: track.isMetadataLoaded ? [] : .placeholder)
+                .redacted(reason: vm.isMetadataLoaded ? [] : .placeholder)
 
             if shouldShowAlbum {
                 Text("•")
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
 
-                Text(track.album)
+                Text(vm.album)
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
-                    .redacted(reason: track.isMetadataLoaded ? [] : .placeholder)
+                    .redacted(reason: vm.isMetadataLoaded ? [] : .placeholder)
             }
 
             if shouldShowYear {
@@ -279,7 +371,7 @@ private struct TrackListRow: View {
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
 
-                Text(track.year)
+                Text(vm.year)
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
             }
@@ -287,11 +379,11 @@ private struct TrackListRow: View {
     }
 
     private var durationLabel: some View {
-        Text(formatDuration(track.duration))
+        Text(formatDuration(vm.duration))
             .font(.system(size: 12))
             .foregroundColor(.secondary)
             .monospacedDigit()
-            .redacted(reason: track.isMetadataLoaded ? [] : .placeholder)
+            .redacted(reason: vm.isMetadataLoaded ? [] : .placeholder)
     }
 
     private var backgroundView: some View {
@@ -331,11 +423,11 @@ private struct TrackListRow: View {
     }
 
     private var shouldShowAlbum: Bool {
-        !track.album.isEmpty && track.album != "Unknown Album"
+        !vm.album.isEmpty && vm.album != "Unknown Album"
     }
 
     private var shouldShowYear: Bool {
-        track.isMetadataLoaded && !track.year.isEmpty && track.year != "Unknown Year"
+        vm.isMetadataLoaded && !vm.year.isEmpty && vm.year != "Unknown Year"
     }
 
     // MARK: - Methods
@@ -353,8 +445,8 @@ private struct TrackListRow: View {
         // Prevent duplicate tasks
         guard artworkLoadTask == nil else { return }
 
-        // Try cache first
-        let cacheKey = "\(track.id.uuidString)-track-list"
+        // Unified cache key – always use the larger grid thumbnail so we never decode twice.
+        let cacheKey = "\(track.id.uuidString)-track-grid"
         if let cachedImage = ImageCache.shared.image(forKey: cacheKey) {
             self.artworkImage = cachedImage
             return
@@ -368,8 +460,7 @@ private struct TrackListRow: View {
 
             if let data = track.artworkData {
                 // Generate downsampled thumbnail with concurrency limit
-                if let thumbnailImage = ThumbnailGenerator.makeThumbnailLimited(from: data, maxPixelSize: 160) { // 40pt * 4 for high-res displays
-                    // Insert into cache
+                if let thumbnailImage = ThumbnailGenerator.makeThumbnailLimited(from: data, maxPixelSize: 320) { // Grid size — reuse for list
                     ImageCache.shared.insertImage(thumbnailImage, forKey: cacheKey)
 
                     await MainActor.run {
@@ -393,5 +484,9 @@ private struct TrackListRow: View {
             return String(num)
         }
         return ""
+    }
+
+    static func == (lhs: TrackListRow, rhs: TrackListRow) -> Bool {
+        lhs.track.id == rhs.track.id && lhs.isHovered == rhs.isHovered
     }
 }
