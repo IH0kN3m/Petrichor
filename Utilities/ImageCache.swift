@@ -15,8 +15,8 @@ final class ImageCache {
         // • `totalCostLimit` ~300 MB based on the *decompressed* bitmap footprint (see `representationSize`).
         //   `NSCache` automatically evicts least-recently-used entries when these thresholds are reached,
         //   and the cache will also be purged entirely under system memory pressure.
-        cache.countLimit = 10_000
-        cache.totalCostLimit = 512 * 1_024 * 1_024 // ≈ 512 MB
+        cache.countLimit = 100_000
+        cache.totalCostLimit = 1024 * 1_024 * 1_024 // ≈ 512 MB
         self.cache = cache
     }
 
