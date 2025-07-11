@@ -326,14 +326,28 @@ extension DatabaseManager {
                         .filter(Track.Columns.isDuplicate == false)
                         .select(sum(Track.Columns.duration))
                         .fetchOne(db) ?? 0.0
-                    
+
+                    // Fetch primary artist name for this album (if any)
+                    let primaryArtistName: String? = try AlbumArtist
+                        .filter(AlbumArtist.Columns.albumId == albumId)
+                        .filter(AlbumArtist.Columns.role == "primary")
+                        .order(AlbumArtist.Columns.position)
+                        .fetchOne(db)
+                        .flatMap { albumArtist in
+                            try Artist
+                                .filter(Artist.Columns.id == albumArtist.artistId)
+                                .fetchOne(db)
+                        }?
+                        .name
+
                     return AlbumEntity(
                         name: album.title,
                         trackCount: album.totalTracks ?? 0,
                         artworkData: album.artworkData,
                         albumId: album.id,
                         year: album.releaseYear.map { String($0) } ?? "",
-                        duration: totalDuration
+                        duration: totalDuration,
+                        artistName: primaryArtistName
                     )
                 }
             }
